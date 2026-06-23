@@ -25,10 +25,12 @@ CREATE TABLE turmas (
 );
 
 -- 4. Tabela de Matérias
--- Matérias globais que podem ser lecionadas (Ex: Windows, Word, Excel)
+-- Matérias que pertencem a um curso específico (Módulos do curso)
 CREATE TABLE materias (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     nome TEXT NOT NULL,
+    curso_id UUID REFERENCES cursos(id) ON DELETE CASCADE,
+    ordem INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 

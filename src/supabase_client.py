@@ -47,12 +47,17 @@ def delete_curso(curso_id: str):
 
 def get_materias():
     supabase = get_supabase_client()
-    response = supabase.table("materias").select("*").order("ordem").execute()
+    response = supabase.table("materias").select("*, cursos(nome)").order("ordem").execute()
     return response.data
 
-def insert_materia(nome: str, ordem: int = 0):
+def get_materias_por_curso(curso_id: str):
     supabase = get_supabase_client()
-    response = supabase.table("materias").insert({"nome": nome, "ordem": ordem}).execute()
+    response = supabase.table("materias").select("*").eq("curso_id", curso_id).order("ordem").execute()
+    return response.data
+
+def insert_materia(nome: str, curso_id: str, ordem: int = 0):
+    supabase = get_supabase_client()
+    response = supabase.table("materias").insert({"nome": nome, "curso_id": curso_id, "ordem": ordem}).execute()
     return response.data
 
 def delete_materia(materia_id: str):

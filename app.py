@@ -74,12 +74,19 @@ with tab_admin:
                     st.success("Curso salvo!")
                     
         with st.expander("📖 Cadastrar Matéria"):
-            with st.form("form_materia"):
-                nome_materia = st.text_input("Nome da Matéria (Ex: Windows, Excel)")
-                ordem_materia = st.number_input("Ordem de exibição (Ex: 1, 2, 3...)", min_value=0, value=0, step=1)
-                if st.form_submit_button("Salvar") and nome_materia:
-                    db.insert_materia(nome_materia, int(ordem_materia))
-                    st.success("Matéria salva!")
+            cursos_mat = db.get_cursos()
+            if cursos_mat:
+                with st.form("form_materia"):
+                    nome_materia = st.text_input("Nome da Matéria (Ex: Windows, Excel)")
+                    curso_dict_mat = {c['id']: c['nome'] for c in cursos_mat}
+                    sel_curso_mat = st.selectbox("Curso a qual pertence", list(curso_dict_mat.keys()), format_func=lambda x: curso_dict_mat[x])
+                    ordem_materia = st.number_input("Ordem de exibição (Ex: 1, 2, 3...)", min_value=0, value=0, step=1)
+                    if st.form_submit_button("Salvar") and nome_materia:
+                        db.insert_materia(nome_materia, sel_curso_mat, int(ordem_materia))
+                        st.success("Matéria salva!")
+                        st.rerun()
+            else:
+                st.info("Cadastre ao menos um Curso primeiro.")
                     
     with col2:
         with st.expander("👥 Cadastrar Turma", expanded=True):
@@ -132,13 +139,14 @@ with tab_admin:
         with tab_del_mat:
             mats = db.get_materias()
             if mats:
-                mat_dict_del = {m['id']: m['nome'] for m in mats}
-                with st.form("form_del_mat"):
-                    sel_mat_del = st.selectbox("Selecione a Matéria", list(mat_dict_del.keys()), format_func=lambda x: mat_dict_del[x])
-                    if st.form_submit_button("Excluir Matéria"):
-                        db.delete_materia(sel_mat_del)
-                        st.success("Matéria excluída!")
-                        st.rerun()
+                mat_dict_del = {m['id']: f"{m['nome']} ({m['cursos']['nome']})" for m in mats if m.get('cursos')}
+                if mat_dict_del:
+                    with st.form("form_del_mat"):
+                        sel_mat_del = st.selectbox("Selecione a Matéria", list(mat_dict_del.keys()), format_func=lambda x: mat_dict_del[x])
+                        if st.form_submit_button("Excluir Matéria"):
+                            db.delete_materia(sel_mat_del)
+                            st.success("Matéria excluída!")
+                            st.rerun()
                         
         with tab_del_turma:
             turmas_cadastradas = db.get_turmas()
@@ -159,38 +167,43 @@ with tab_upload:
     st.header("1. Upload de Diários (Planilhas)")
     
     turmas = db.get_turmas()
-    materias = db.get_materias()
     
-    if not turmas or not materias:
-        st.warning("Cadastre Turmas e Matérias no Painel Admin antes de fazer upload.")
+    if not turmas:
+        st.warning("Cadastre Turmas no Painel Admin antes de fazer upload.")
     else:
         turma_dict = {t['id']: f"{t['nome']} ({t['cursos']['nome']})" for t in turmas}
-        materia_dict = {m['id']: m['nome'] for m in materias}
         
         sel_turma_upload = st.selectbox("Selecione a Turma da qual esses diários pertencem:", list(turma_dict.keys()), format_func=lambda x: turma_dict[x])
         
-        arquivos = st.file_uploader("Selecione os arquivos Excel/CSV", accept_multiple_files=True, type=['xlsx', 'csv'], key=f"uploader_{sel_turma_upload}")
+        turma_selecionada = next(t for t in turmas if t['id'] == sel_turma_upload)
+        materias_do_curso = db.get_materias_por_curso(turma_selecionada['curso_id'])
         
-        arquivos_com_materias = []
-        if arquivos:
-            st.subheader("2. Vincular Matérias")
-            for arquivo in arquivos:
-                materia_id = st.selectbox(f"Matéria para o arquivo '{arquivo.name}':", list(materia_dict.keys()), format_func=lambda x: materia_dict[x], key=f"mat_{arquivo.name}")
-                if materia_id:
-                    arquivos_com_materias.append({'file': arquivo, 'materia': materia_dict[materia_id], 'materia_id': materia_id})
-                    
-            st.divider()
-            if st.button("Processar e Salvar no Supabase", type="primary"):
-                with st.spinner("Processando planilhas e enviando para nuvem..."):
-                    try:
-                        for item in arquivos_com_materias:
-                            # Processa apenas o arquivo individual
-                            df_individual = processar_planilhas([{'file': item['file'], 'materia': item['materia']}])
-                            if not df_individual.empty:
-                                sucessos = db.salvar_dados_upload(df_individual, sel_turma_upload, item['materia_id'])
-                        st.success("Dados lidos das planilhas e salvos no Supabase com sucesso!")
-                    except Exception as e:
-                        st.error(f"Erro ao processar: {e}")
+        if not materias_do_curso:
+            st.warning("Cadastre Matérias para este curso no Painel Admin antes de fazer upload.")
+        else:
+            materia_dict = {m['id']: m['nome'] for m in materias_do_curso}
+            
+            arquivos = st.file_uploader("Selecione os arquivos Excel/CSV", accept_multiple_files=True, type=['xlsx', 'csv'], key=f"uploader_{sel_turma_upload}")
+            
+            arquivos_com_materias = []
+            if arquivos:
+                st.subheader("2. Vincular Matérias")
+                for arquivo in arquivos:
+                    materia_id = st.selectbox(f"Matéria para o arquivo '{arquivo.name}':", list(materia_dict.keys()), format_func=lambda x: materia_dict[x], key=f"mat_{arquivo.name}")
+                    if materia_id:
+                        arquivos_com_materias.append({'file': arquivo, 'materia': materia_dict[materia_id], 'materia_id': materia_id})
+                        
+                st.divider()
+                if st.button("Processar e Salvar no Supabase", type="primary"):
+                    with st.spinner("Processando planilhas e enviando para nuvem..."):
+                        try:
+                            for item in arquivos_com_materias:
+                                df_individual = processar_planilhas([{'file': item['file'], 'materia': item['materia']}])
+                                if not df_individual.empty:
+                                    sucessos = db.salvar_dados_upload(df_individual, sel_turma_upload, item['materia_id'])
+                            st.success("Dados lidos das planilhas e salvos no Supabase com sucesso!")
+                        except Exception as e:
+                            st.error(f"Erro ao processar: {e}")
 
 # ================================
 # ABA: BOLETINS
