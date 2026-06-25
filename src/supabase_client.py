@@ -110,7 +110,7 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
                 nota = 0.0
         except (ValueError, TypeError):
             nota = 0.0
-            
+
         try:
             presencas = int(row.get('Presenças', 0))
         except (ValueError, TypeError):
@@ -120,9 +120,16 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
             faltas = int(row.get('Faltas', 0))
         except (ValueError, TypeError):
             faltas = 0
+            
+        frequencia_lista = row.get('Frequencia_Detalhada', [])
+        notas_extras = row.get('Notas_Detalhadas', {})
+        
+        detalhes = {
+            "frequencia": frequencia_lista,
+            "notas": notas_extras
+        }
         
         # 1. Tenta inserir ou garantir que o aluno existe (Upsert)
-        # Como o upsert nativo baseia-se na PK (matrícula), usamos upsert
         aluno_data = {
             "matricula": matricula,
             "nome": nome,
@@ -131,13 +138,13 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
         supabase.table("alunos").upsert(aluno_data).execute()
         
         # 2. Inserir ou atualizar a nota para esta matéria específica
-        # Usamos on_conflict para lidar com a UNIQUE constraint se ela for criada depois
         nota_data = {
             "aluno_matricula": matricula,
             "materia_id": materia_id,
             "nota": nota,
             "presencas": presencas,
-            "faltas": faltas
+            "faltas": faltas,
+            "detalhes_json": detalhes
         }
         
         # Como é uma relação única entre aluno e materia, caso já exista, precisa atualizar.
@@ -166,8 +173,24 @@ def get_alunos_por_turma(turma_id: str):
 
 def get_notas_aluno(matricula: str):
     supabase = get_supabase_client()
-    # Puxa as notas juntamente com o nome da matéria usando Foreign Key
-    response = supabase.table("notas").select("*, materias(nome)").eq("aluno_matricula", matricula).execute()
+    # Puxa as notas juntamente com o nome e a ordem da matéria usando Foreign Key
+    response = supabase.table("notas").select("*, materias(nome, ordem)").eq("aluno_matricula", matricula).execute()
     return response.data
+
+def clear_all_data():
+    supabase = get_supabase_client()
+    # Delete in order of dependency to respect foreign key constraints
+    # 1. Notas
+    supabase.table("notas").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    # 2. Alunos
+    supabase.table("alunos").delete().neq("matricula", "").execute()
+    # 3. Turmas
+    supabase.table("turmas").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    # 4. Materias
+    supabase.table("materias").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    # 5. Cursos
+    supabase.table("cursos").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    # 6. Professores
+    supabase.table("professores").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
 # Force reload for streamlit

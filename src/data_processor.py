@@ -21,7 +21,8 @@ def localizar_cabecalho(df):
 def processar_planilhas(arquivos_com_materias):
     """
     Processa múltiplas planilhas e unifica pelo número da matrícula.
-    Retorna um DataFrame único contendo os dados de todas as matérias processadas.
+    Retorna um DataFrame único contendo os dados de todas as matérias processadas,
+    incluindo dicionários de notas dinâmicas e arrays de presença.
     """
     if not arquivos_com_materias:
         return pd.DataFrame()
@@ -32,7 +33,6 @@ def processar_planilhas(arquivos_com_materias):
         arquivo = item['file']
         materia = item['materia']
         
-        # Lê a planilha normalmente sem pular linhas de forma fixa
         try:
             if arquivo.name.endswith('.csv'):
                 df = pd.read_csv(arquivo)
@@ -41,36 +41,80 @@ def processar_planilhas(arquivos_com_materias):
         except Exception as e:
             raise ValueError(f"Erro ao ler a planilha {arquivo.name}: {e}")
 
-        # Localiza dinamicamente onde a tabela começa
         df = localizar_cabecalho(df)
-
         colunas_originais = df.columns.tolist()
         
-        # Encontra as colunas principais
         col_matricula = next((c for c in colunas_originais if any(x in str(c).lower() for x in ['matr', 'ra', 'id', 'cód', 'cod'])), None)
         col_nome = next((c for c in colunas_originais if any(x in str(c).lower() for x in ['nome', 'aluno', 'estudante'])), None)
-        col_nota = next((c for c in colunas_originais if 'prova' in str(c).lower() or 'nota' in str(c).lower()), None)
+        
+        # Para a média geral da matéria
+        col_media = next((c for c in colunas_originais if 'média' in str(c).lower() or 'media' in str(c).lower()), None)
+        if not col_media:
+            col_media = next((c for c in colunas_originais if 'nota' in str(c).lower()), None)
 
         if not col_matricula or not col_nome:
-            raise ValueError(f"A planilha '{arquivo.name}' não possui colunas de Matrícula ou Nome válidas. Colunas encontradas: {colunas_originais}")
+            raise ValueError(f"A planilha '{arquivo.name}' não possui colunas de Matrícula ou Nome válidas.")
 
         df.rename(columns={col_matricula: 'Matrícula', col_nome: 'Nome'}, inplace=True)
-        if col_nota:
-            df.rename(columns={col_nota: 'Nota'}, inplace=True)
+        
+        if col_media:
+            df.rename(columns={col_media: 'Nota'}, inplace=True)
         else:
             df['Nota'] = 0.0
 
-        # Filtra as colunas de aulas (qualquer coluna que tenha 'aula' no nome ou comece com 'A' curto)
-        colunas_aulas = [col for col in df.columns if 'aula' in str(col).lower() or (str(col).lower().startswith('a') and len(str(col)) <= 3)]
+        # Filtra as colunas de aulas para a frequência
+        colunas_aulas = [col for col in colunas_originais if ('aula' in str(col).lower() or (str(col).lower().startswith('a') and len(str(col)) <= 3)) and col not in [col_matricula, col_nome, col_media]]
         
-        # Converte valores para maiúsculo para garantir a contagem e remove espaços em branco
         for col in colunas_aulas:
             df[col] = df[col].astype(str).str.strip().str.upper()
 
         df['Presenças'] = (df[colunas_aulas] == 'P').sum(axis=1)
         df['Faltas'] = (df[colunas_aulas] == 'F').sum(axis=1)
 
-        # Evita divisão por zero
+        # Extrair sequência exata de frequência para desenhar os quadradinhos
+        def extract_freq(row):
+            return [row[c] if row[c] in ['P', 'F'] else '' for c in colunas_aulas]
+            
+        df['Frequencia_Detalhada'] = df.apply(extract_freq, axis=1)
+
+        # Extrair notas detalhadas (colunas que não são ID, Aula ou Media)
+        import math
+        colunas_excluir = [col_matricula, col_nome, col_media, 'Matrícula', 'Nome', 'Nota'] + colunas_aulas
+        colunas_extras = [c for c in colunas_originais if c not in colunas_excluir]
+
+        def extract_grades(row):
+            grades = {}
+            for c in colunas_extras:
+                val = row[c]
+                try:
+                    val_float = float(val)
+                    if not math.isnan(val_float):
+                        # Pega o nome original da coluna
+                        grades[str(c)] = val_float
+                except:
+                    pass
+            return grades
+
+        df['Notas_Detalhadas'] = df.apply(extract_grades, axis=1)
+
+        # Se a nota final não foi obtida da coluna principal ou veio como zero, calcula a média a partir de Notas_Detalhadas
+        def calcular_nota_final(row):
+            try:
+                val = float(row.get('Nota', 0.0))
+                if not math.isnan(val) and val > 0:
+                    return val
+            except:
+                pass
+            
+            detalhadas = row.get('Notas_Detalhadas', {})
+            if detalhadas:
+                valores = [float(v) for v in detalhadas.values() if v is not None and not math.isnan(float(v))]
+                if valores:
+                    return sum(valores) / len(valores)
+            return 0.0
+
+        df['Nota'] = df.apply(calcular_nota_final, axis=1)
+
         df['Frequência (%)'] = df.apply(
             lambda row: (row['Presenças'] / row_total * 100) if (row_total := row['Presenças'] + row['Faltas']) > 0 else 0, 
             axis=1
@@ -78,17 +122,14 @@ def processar_planilhas(arquivos_com_materias):
 
         df['Matéria'] = materia
 
-        # Seleciona apenas as colunas essenciais
-        colunas_finais = ['Matrícula', 'Nome', 'Matéria', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)']
+        colunas_finais = ['Matrícula', 'Nome', 'Matéria', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)', 'Frequencia_Detalhada', 'Notas_Detalhadas']
         
-        # Dropa linhas vazias
         df_resumo = df[colunas_finais].dropna(subset=['Matrícula', 'Nome'])
         dados_consolidados.append(df_resumo)
 
     if not dados_consolidados:
         return pd.DataFrame()
 
-    # Concatena todos os DataFrames
     df_final = pd.concat(dados_consolidados, ignore_index=True)
     return df_final
 

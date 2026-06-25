@@ -67,11 +67,24 @@ with tab_admin:
                     st.success("Professor salvo!")
                     
         with st.expander("📚 Cadastrar Curso"):
+            cursos_atuais = db.get_cursos()
+            if cursos_atuais:
+                st.markdown("**Cursos já cadastrados:**")
+                nomes_cursos = [c['nome'] for c in cursos_atuais]
+                st.write(", ".join(nomes_cursos))
+            else:
+                st.info("Nenhum curso cadastrado ainda.")
+                
             with st.form("form_curso"):
                 nome_curso = st.text_input("Nome do Curso")
                 if st.form_submit_button("Salvar") and nome_curso:
-                    db.insert_curso(nome_curso)
-                    st.success("Curso salvo!")
+                    nomes_existentes = [c['nome'].strip().lower() for c in (cursos_atuais or [])]
+                    if nome_curso.strip().lower() in nomes_existentes:
+                        st.warning(f"O curso '{nome_curso}' já está cadastrado!")
+                    else:
+                        db.insert_curso(nome_curso)
+                        st.success("Curso salvo!")
+                        st.rerun()
                     
         with st.expander("📖 Cadastrar Matéria"):
             cursos_mat = db.get_cursos()
@@ -160,6 +173,18 @@ with tab_admin:
                             st.success("Turma excluída!")
                             st.rerun()
 
+    with st.expander("💥 Redefinir / Limpar Todo o Banco de Dados"):
+        st.error("PERIGO: Esta ação é irreversível e excluirá todos os professores, cursos, matérias, turmas, alunos e notas do banco de dados!")
+        confirmar_reset = st.checkbox("Eu tenho certeza de que desejo apagar TODOS os dados do sistema e começar do zero.", key="cb_reset_db")
+        if st.button("Executar Limpeza Total", type="primary", disabled=not confirmar_reset, key="btn_reset_db"):
+            with st.spinner("Excluindo dados..."):
+                try:
+                    db.clear_all_data()
+                    st.success("O banco de dados foi completamente redefinido!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Erro ao limpar banco de dados: {e}")
+
 # ================================
 # ABA: UPLOAD DE DADOS
 # ================================
@@ -233,9 +258,11 @@ with tab_boletins:
                             df_aluno['Ordem'] = df_aluno['materias'].apply(lambda m: m.get('ordem', 0))
                             df_aluno = df_aluno.sort_values(by='Ordem')
                             df_aluno['Nota'] = df_aluno['nota']
+                            
                             df_aluno['Presenças'] = df_aluno['presencas']
                             df_aluno['Faltas'] = df_aluno['faltas']
                             df_aluno['Frequência (%)'] = df_aluno.apply(lambda r: (r['Presenças']/(r['Presenças']+r['Faltas'])*100) if (r['Presenças']+r['Faltas'])>0 else 0, axis=1)
+                            df_aluno['Detalhes_JSON'] = df_aluno['detalhes_json']
                             
                             st.subheader(f"Desempenho: {aluno_dict[aluno_sel]}")
                             
@@ -249,7 +276,8 @@ with tab_boletins:
                             m3.metric("Total Faltas", total_f)
                             m4.metric("Frequência Global", f"{freq_global:.1f}%")
                             
-                            st.dataframe(df_aluno[['Matéria', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)']], use_container_width=True, hide_index=True)
+                            colunas_mostrar = ['Matéria', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)']
+                            st.dataframe(df_aluno[colunas_mostrar], use_container_width=True, hide_index=True)
                             
                             st.divider()
                             st.subheader("Gerar Boletim PDF")
