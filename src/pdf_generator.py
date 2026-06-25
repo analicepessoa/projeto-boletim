@@ -341,6 +341,38 @@ def gerar_pdf(dados_aluno, total_presencas, total_faltas, freq_global, responsav
         pdf.rect(15, start_y, 180, (end_y - start_y) + 5, style='D')
         pdf.set_y(end_y + 10)
 
+    # ---- Assinaturas (para quem quiser a versão impressa) ----
+    # Garante espaço; se não couber, joga para a próxima página.
+    if pdf.get_y() > 245:
+        pdf.add_page()
+    pdf.ln(22)  # espaço em branco acima das linhas para assinar
+
+    col_w = 75
+    x_esq = 22
+    x_dir = 113
+    y_linha = pdf.get_y()
+
+    pdf.set_draw_color(80, 80, 80)
+    pdf.set_line_width(0.3)
+    pdf.line(x_esq, y_linha, x_esq + col_w, y_linha)
+    pdf.line(x_dir, y_linha, x_dir + col_w, y_linha)
+
+    pdf.set_font('helvetica', '', 9)
+    pdf.set_text_color(80, 80, 80)
+    pdf.set_xy(x_esq, y_linha + 1)
+    pdf.cell(col_w, 5, "Assinatura do Aluno(a)", align='C')
+    pdf.set_xy(x_dir, y_linha + 1)
+    pdf.cell(col_w, 5, "Assinatura do Responsável", align='C')
+
+    # Nome impresso abaixo do rótulo
+    pdf.set_font('helvetica', '', 8)
+    pdf.set_text_color(120, 120, 120)
+    pdf.set_xy(x_esq, y_linha + 6)
+    pdf.cell(col_w, 4, str(dados_aluno.get('nome', '')).upper()[:45], align='C')
+    if responsavel:
+        pdf.set_xy(x_dir, y_linha + 6)
+        pdf.cell(col_w, 4, str(responsavel).upper()[:45], align='C')
+
     # Output
     output_dir = "boletins_gerados"
     if not os.path.exists(output_dir):
