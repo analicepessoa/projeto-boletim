@@ -360,18 +360,18 @@ def gerar_pdf(dados_aluno, total_presencas, total_faltas, freq_global, responsav
     pdf.set_font('helvetica', '', 9)
     pdf.set_text_color(80, 80, 80)
     pdf.set_xy(x_esq, y_linha + 1)
-    pdf.cell(col_w, 5, "Assinatura do Aluno(a)", align='C')
+    pdf.cell(col_w, 5, "Assinatura do Professor", align='C')
     pdf.set_xy(x_dir, y_linha + 1)
-    pdf.cell(col_w, 5, "Assinatura do Responsável", align='C')
+    pdf.cell(col_w, 5, "Assinatura do Aluno ou Responsável", align='C')
 
     # Nome impresso abaixo do rótulo
     pdf.set_font('helvetica', '', 8)
     pdf.set_text_color(120, 120, 120)
-    pdf.set_xy(x_esq, y_linha + 6)
+    if professor:
+        pdf.set_xy(x_esq, y_linha + 6)
+        pdf.cell(col_w, 4, str(professor).upper()[:45], align='C')
+    pdf.set_xy(x_dir, y_linha + 6)
     pdf.cell(col_w, 4, str(dados_aluno.get('nome', '')).upper()[:45], align='C')
-    if responsavel:
-        pdf.set_xy(x_dir, y_linha + 6)
-        pdf.cell(col_w, 4, str(responsavel).upper()[:45], align='C')
 
     # Output
     output_dir = "boletins_gerados"
