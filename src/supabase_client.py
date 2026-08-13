@@ -1,15 +1,40 @@
+import math
 import os
-from supabase import create_client, Client
-import streamlit as st
 
-# Usando as credenciais informadas pelo usuário
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://zfevvffmayedloyhzhlt.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_-UWnsy5OXQLwnoaIoJiavg_33ASJBxW")
+import streamlit as st
+from supabase import Client, create_client
+
+
+def _config_value(name: str) -> str:
+    """Lê configuração local, do Streamlit Cloud ou de variável de ambiente."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
 
 # O st.cache_resource garante que o cliente Supabase seja inicializado apenas uma vez
 @st.cache_resource
 def get_supabase_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    url = _config_value("SUPABASE_URL")
+    key = _config_value("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError(
+            "Supabase não configurado. Informe SUPABASE_URL e SUPABASE_KEY "
+            "nas configurações do aplicativo."
+        )
+    return create_client(url, key)
+
+
+def testar_conexao() -> tuple[bool, str]:
+    """Confirma configuração, acesso ao banco e existência do esquema básico."""
+    try:
+        get_supabase_client().table("cursos").select("id").limit(1).execute()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
 # ==========================================
 # FUNÇÕES DE CRUD - PAINEL ADMIN
@@ -88,8 +113,6 @@ def delete_turma(turma_id: str):
 # FUNÇÕES DE UPLOAD E NOTAS
 # ==========================================
 
-import math
-
 def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
     """
     Recebe o DataFrame gerado pelo processador e salva Alunos e Notas no Supabase.
@@ -100,8 +123,8 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
     sucesso_notas = 0
     
     for index, row in df_consolidado.iterrows():
-        matricula = str(row['Matrícula'])
-        nome = str(row['Nome'])
+        matricula = str(row['Matrícula']).strip()
+        nome = str(row['Nome']).strip()
         
         # Lida com NaN de forma segura
         try:
@@ -135,7 +158,7 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
             "nome": nome,
             "turma_id": turma_id
         }
-        supabase.table("alunos").upsert(aluno_data).execute()
+        supabase.table("alunos").upsert(aluno_data, on_conflict="matricula").execute()
         
         # 2. Inserir ou atualizar a nota para esta matéria específica
         nota_data = {
@@ -147,15 +170,11 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
             "detalhes_json": detalhes
         }
         
-        # Como é uma relação única entre aluno e materia, caso já exista, precisa atualizar.
-        # Mas para simplificar, vamos tentar deletar a nota antiga se houver, e inserir a nova, 
-        # ou apenas inserir e tratar erro
         try:
-            # Apaga registro anterior se existir para evitar erro de duplicidade
-            supabase.table("notas").delete().eq("aluno_matricula", matricula).eq("materia_id", materia_id).execute()
-            
-            # Insere a nova
-            supabase.table("notas").insert(nota_data).execute()
+            # Atualiza ou cria em uma única operação, sem apagar a nota anterior primeiro.
+            supabase.table("notas").upsert(
+                nota_data, on_conflict="aluno_matricula,materia_id"
+            ).execute()
             sucesso_notas += 1
         except Exception as e:
             st.warning(f"Erro ao salvar nota do aluno {nome}: {str(e)}")
