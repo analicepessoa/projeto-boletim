@@ -1,5 +1,10 @@
-import matplotlib.pyplot as plt
 import io
+
+import matplotlib
+
+# Streamlit gera as imagens no servidor; não deve depender da interface Tk do Windows.
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 def gerar_grafico_frequencia(total_presencas, total_faltas):
     """Gera um gráfico de rosca (donut chart) com o total de presenças e faltas."""

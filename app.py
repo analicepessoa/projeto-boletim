@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import os
+import hmac
+from pathlib import Path
 from src.data_processor import processar_planilhas
 from src.chart_maker import gerar_grafico_frequencia
 from src.pdf_generator import gerar_pdf
@@ -8,9 +10,11 @@ import src.supabase_client as db
 
 st.set_page_config(page_title="ALLNET - Boletins Escolares", page_icon="📊", layout="wide")
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+ASSETS_DIR = PROJECT_ROOT / "assets"
+
 # Cria pastas necessárias se não existirem
-if not os.path.exists("assets"):
-    os.makedirs("assets")
+ASSETS_DIR.mkdir(exist_ok=True)
 
 # CSS Customizado
 st.markdown("""
@@ -37,7 +41,7 @@ st.markdown("""
 
 # Título principal
 col_logo, col_title = st.columns([1, 4])
-logo_path = os.path.join("assets", "logo_allnet.png")
+logo_path = str(ASSETS_DIR / "logo_allnet.png")
 with col_logo:
     if os.path.exists(logo_path):
         st.image(logo_path, width=150)
@@ -47,6 +51,49 @@ with col_logo:
 with col_title:
     st.title("Sistema de Consolidação e Boletins")
     st.markdown("Gerencie dados e emita boletins de forma centralizada (Supabase).")
+
+
+def _config_value(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
+
+
+app_password = _config_value("APP_PASSWORD")
+if app_password and not st.session_state.get("autenticado"):
+    with st.form("login"):
+        senha_digitada = st.text_input("Senha de acesso", type="password")
+        entrar = st.form_submit_button("Entrar", type="primary")
+    if entrar:
+        if hmac.compare_digest(senha_digitada, app_password):
+            st.session_state["autenticado"] = True
+            st.rerun()
+        else:
+            st.error("Senha incorreta.")
+    st.stop()
+
+db_ok, db_error = db.testar_conexao()
+if not db_ok:
+    st.error("O aplicativo abriu, mas ainda não conseguiu acessar o banco de dados.")
+    with st.expander("Como corrigir", expanded=True):
+        st.markdown(
+            "1. Copie `.streamlit/secrets.toml.example` para `.streamlit/secrets.toml`.\n"
+            "2. Preencha `SUPABASE_URL` e `SUPABASE_KEY`.\n"
+            "3. No Supabase, execute `setup_supabase.sql` no Editor SQL.\n"
+            "4. Reinicie o aplicativo."
+        )
+        st.caption(f"Detalhe técnico: {db_error}")
+    st.stop()
+
+with st.sidebar:
+    st.success("Banco de dados conectado")
+    st.caption("ALLNET Boletins • versão corrigida")
+    if not app_password:
+        st.warning("Defina APP_PASSWORD antes de publicar o aplicativo.")
 
 # Estrutura em Abas
 tab_upload, tab_admin, tab_boletins = st.tabs(["📤 Upload de Dados", "⚙️ Painel Admin", "📄 Boletins"])
@@ -175,8 +222,12 @@ with tab_admin:
 
     with st.expander("💥 Redefinir / Limpar Todo o Banco de Dados"):
         st.error("PERIGO: Esta ação é irreversível e excluirá todos os professores, cursos, matérias, turmas, alunos e notas do banco de dados!")
-        confirmar_reset = st.checkbox("Eu tenho certeza de que desejo apagar TODOS os dados do sistema e começar do zero.", key="cb_reset_db")
-        if st.button("Executar Limpeza Total", type="primary", disabled=not confirmar_reset, key="btn_reset_db"):
+        confirmar_reset = st.text_input(
+            "Para confirmar, digite APAGAR TUDO",
+            key="confirmar_reset_db",
+        )
+        reset_confirmado = confirmar_reset.strip().upper() == "APAGAR TUDO"
+        if st.button("Executar Limpeza Total", type="primary", disabled=not reset_confirmado, key="btn_reset_db"):
             with st.spinner("Excluindo dados..."):
                 try:
                     db.clear_all_data()
@@ -222,11 +273,15 @@ with tab_upload:
                 if st.button("Processar e Salvar no Supabase", type="primary"):
                     with st.spinner("Processando planilhas e enviando para nuvem..."):
                         try:
+                            total_salvo = 0
                             for item in arquivos_com_materias:
                                 df_individual = processar_planilhas([{'file': item['file'], 'materia': item['materia']}])
                                 if not df_individual.empty:
-                                    sucessos = db.salvar_dados_upload(df_individual, sel_turma_upload, item['materia_id'])
-                            st.success("Dados lidos das planilhas e salvos no Supabase com sucesso!")
+                                    total_salvo += db.salvar_dados_upload(df_individual, sel_turma_upload, item['materia_id'])
+                            if total_salvo:
+                                st.success(f"Upload concluído: {total_salvo} registro(s) de notas salvo(s).")
+                            else:
+                                st.warning("Nenhum registro válido foi encontrado nos arquivos.")
                         except Exception as e:
                             st.error(f"Erro ao processar: {e}")
 

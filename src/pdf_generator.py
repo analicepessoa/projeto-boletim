@@ -2,6 +2,7 @@ from fpdf import FPDF
 import os
 import datetime
 import pandas as pd
+from pathlib import Path
 
 
 def _limpar_label(nome):
@@ -374,13 +375,12 @@ def gerar_pdf(dados_aluno, total_presencas, total_faltas, freq_global, responsav
     pdf.cell(col_w, 4, str(dados_aluno.get('nome', '')).upper()[:45], align='C')
 
     # Output
-    output_dir = "boletins_gerados"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
+    output_dir = Path(__file__).resolve().parent.parent / "boletins_gerados"
+    output_dir.mkdir(exist_ok=True)
         
     nome_limpo = str(dados_aluno['nome']).replace(' ', '_').replace('/', '_')
     nome_arquivo = f"Boletim_{dados_aluno['matricula']}_{nome_limpo}.pdf"
-    output_path = os.path.join(output_dir, nome_arquivo)
-    pdf.output(output_path)
+    output_path = output_dir / nome_arquivo
+    pdf.output(str(output_path))
     
-    return output_path
+    return str(output_path)

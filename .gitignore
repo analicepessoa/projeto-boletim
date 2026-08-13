@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 *.pyd
 .env
+.streamlit/secrets.toml
 .venv/
 venv/
 env/
@@ -12,3 +13,4 @@ env/
 dist/
 build/
 *.spec
+boletins_gerados/

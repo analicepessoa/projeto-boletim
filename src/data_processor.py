@@ -1,5 +1,14 @@
 import pandas as pd
 
+
+def _normalizar_matricula(valor):
+    """Evita matrículas como '123.0' quando o Excel interpreta o campo como número."""
+    if pd.isna(valor):
+        return ""
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
+    return str(valor).strip()
+
 def localizar_cabecalho(df):
     """Varre as primeiras linhas para encontrar onde a tabela realmente começa."""
     # Primeiro checa se o pandas já acertou o cabeçalho de cara (linha 1)
@@ -34,8 +43,13 @@ def processar_planilhas(arquivos_com_materias):
         materia = item['materia']
         
         try:
-            if arquivo.name.endswith('.csv'):
-                df = pd.read_csv(arquivo)
+            if arquivo.name.lower().endswith('.csv'):
+                # Detecta vírgula/ponto e vírgula e tenta os encodings mais comuns no Brasil.
+                try:
+                    df = pd.read_csv(arquivo, sep=None, engine="python", encoding="utf-8-sig")
+                except UnicodeDecodeError:
+                    arquivo.seek(0)
+                    df = pd.read_csv(arquivo, sep=None, engine="python", encoding="latin-1")
             else:
                 df = pd.read_excel(arquivo)
         except Exception as e:
@@ -49,13 +63,15 @@ def processar_planilhas(arquivos_com_materias):
         
         # Para a média geral da matéria
         col_media = next((c for c in colunas_originais if 'média' in str(c).lower() or 'media' in str(c).lower()), None)
-        if not col_media:
+        if col_media is None:
             col_media = next((c for c in colunas_originais if 'nota' in str(c).lower()), None)
 
-        if not col_matricula or not col_nome:
+        if col_matricula is None or col_nome is None:
             raise ValueError(f"A planilha '{arquivo.name}' não possui colunas de Matrícula ou Nome válidas.")
 
         df.rename(columns={col_matricula: 'Matrícula', col_nome: 'Nome'}, inplace=True)
+        df['Matrícula'] = df['Matrícula'].apply(_normalizar_matricula)
+        df['Nome'] = df['Nome'].astype(str).str.strip()
         
         if col_media:
             df.rename(columns={col_media: 'Nota'}, inplace=True)
@@ -91,7 +107,7 @@ def processar_planilhas(arquivos_com_materias):
                     if not math.isnan(val_float):
                         # Pega o nome original da coluna
                         grades[str(c)] = val_float
-                except:
+                except (TypeError, ValueError):
                     pass
             return grades
 
@@ -103,7 +119,7 @@ def processar_planilhas(arquivos_com_materias):
                 val = float(row.get('Nota', 0.0))
                 if not math.isnan(val) and val > 0:
                     return val
-            except:
+            except (TypeError, ValueError):
                 pass
             
             detalhadas = row.get('Notas_Detalhadas', {})
@@ -124,7 +140,12 @@ def processar_planilhas(arquivos_com_materias):
 
         colunas_finais = ['Matrícula', 'Nome', 'Matéria', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)', 'Frequencia_Detalhada', 'Notas_Detalhadas']
         
-        df_resumo = df[colunas_finais].dropna(subset=['Matrícula', 'Nome'])
+        df_resumo = df[colunas_finais]
+        df_resumo = df_resumo[
+            df_resumo['Matrícula'].ne('')
+            & df_resumo['Nome'].ne('')
+            & df_resumo['Nome'].str.lower().ne('nan')
+        ]
         dados_consolidados.append(df_resumo)
 
     if not dados_consolidados:
