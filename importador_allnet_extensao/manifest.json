@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Importador ALLNET para Boletins",
+  "version": "1.0.0",
+  "description": "Reúne os módulos do Diário de Classe em um único arquivo para conferência no Sistema de Boletins.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://app.grupoallnet.com.br/apps/pedagogico/diario-classe*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://app.grupoallnet.com.br/*"
+  ]
+}
+
