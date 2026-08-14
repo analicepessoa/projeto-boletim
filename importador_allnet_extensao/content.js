@@ -36,6 +36,15 @@
     return clean(table.innerText);
   }
 
+  function hasVisibleEmptyState() {
+    const emptyPattern = /nenhum registro|nenhum resultado|nenhum dado|não há dados|nao ha dados|sem dados|nenhuma aula|nenhuma prova/i;
+    return [...document.querySelectorAll("p, span, td, div")].some((element) => {
+      if (!visible(element) || element.children.length > 2) return false;
+      const text = clean(element.innerText);
+      return text.length > 0 && text.length < 180 && emptyPattern.test(text);
+    });
+  }
+
   function parseNumber(value) {
     const match = clean(value).replace(",", ".").match(/-?\d+(?:\.\d+)?/);
     if (!match) return null;
@@ -110,21 +119,31 @@
     if (!searchButton) throw new Error("O botão Pesquisar não foi encontrado.");
 
     searchButton.click();
-    await sleep(700);
+    await sleep(500);
+    const startedAt = Date.now();
     let stableCount = 0;
     let lastSignature = "";
-    const deadline = Date.now() + 20000;
+    let sawTransition = false;
+    const deadline = startedAt + 15000;
     while (Date.now() < deadline) {
       const signature = tableSignature();
+      const elapsed = Date.now() - startedAt;
+      if (!signature || signature !== previousSignature) sawTransition = true;
       if (signature && signature === lastSignature) stableCount += 1;
       else stableCount = 0;
       lastSignature = signature;
-      if (signature && stableCount >= 3 && (signature !== previousSignature || Date.now() > deadline - 18500)) {
-        return;
+      if (!signature && elapsed >= 1000 && hasVisibleEmptyState()) {
+        return "empty";
+      }
+      if (signature && stableCount >= 3 && (sawTransition || elapsed >= 5000)) {
+        return "table";
+      }
+      if (!signature && elapsed >= 8000) {
+        return "empty";
       }
       await sleep(250);
     }
-    if (!visibleAcademicTable()) throw new Error("A ALLNET demorou para carregar a tabela.");
+    return visibleAcademicTable() ? "table" : "empty";
   }
 
   function downloadPackage(data) {
@@ -161,6 +180,7 @@
     startButton.disabled = true;
     closeButton.disabled = true;
     const modules = [];
+    const ignoredModules = [];
     try {
       for (let index = 0; index < products.length; index += 1) {
         const product = products[index];
@@ -170,9 +190,21 @@
         product.click();
         await sleep(100);
         if (!product.checked) throw new Error(`Não foi possível selecionar ${moduleName}.`);
-        await searchAndWait(previousSignature);
-        const tableData = readAcademicTable();
+        const searchResult = await searchAndWait(previousSignature);
+        const tableData = searchResult === "table" ? readAcademicTable() : null;
+        if (!tableData || tableData.colunas.length <= 2 || tableData.alunos.length === 0) {
+          ignoredModules.push({
+            id: product.value,
+            nome: moduleName,
+            motivo: "Módulo ainda sem aulas, provas ou alunos cadastrados",
+          });
+          continue;
+        }
         modules.push({ id: product.value, nome: moduleName, ...tableData });
+      }
+
+      if (!modules.length) {
+        throw new Error("Nenhum módulo com conteúdo acadêmico foi encontrado nesta turma.");
       }
 
       const data = {
@@ -181,10 +213,14 @@
         origem: location.origin + location.pathname,
         turma: { id: selectedClass.value, nome: labelOf(selectedClass) },
         modulos: modules,
+        modulos_ignorados: ignoredModules,
       };
       downloadPackage(data);
+      const ignoredText = ignoredModules.length
+        ? ` ${ignoredModules.length} módulo(s) ainda vazio(s) foram ignorados.`
+        : "";
       setStatus(
-        `Pronto: ${modules.length} módulos e ${modules.reduce((sum, item) => sum + item.alunos.length, 0)} registros reunidos. Agora envie o arquivo no Sistema de Boletins.`,
+        `Pronto: ${modules.length} módulos e ${modules.reduce((sum, item) => sum + item.alunos.length, 0)} registros reunidos.${ignoredText} Agora envie o arquivo no Sistema de Boletins.`,
         "success"
       );
     } catch (error) {
