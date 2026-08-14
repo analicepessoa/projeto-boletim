@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Importador ALLNET para Boletins",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Reúne os módulos do Diário de Classe em um único arquivo para conferência no Sistema de Boletins.",
   "content_scripts": [
     {
