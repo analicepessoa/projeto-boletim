@@ -127,6 +127,32 @@ def _matricula_exibicao(matricula_interna: str) -> str:
     return str(matricula_interna).rsplit("::", 1)[-1]
 
 
+def _normalizar_ctr(ctr: str) -> str:
+    """Normaliza o CTR digitado sem alterar códigos alfanuméricos."""
+    valor = str(ctr or "").strip()
+    if valor.endswith(".0") and valor[:-2].isdigit():
+        return valor[:-2]
+    return valor
+
+
+def _consolidar_notas_por_materia(notas: list[dict]) -> list[dict]:
+    """Mantém somente o lançamento mais recente quando um módulo se repete."""
+    consolidadas = {}
+    sem_materia = []
+
+    for nota in sorted(
+        notas,
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+    ):
+        materia_id = nota.get("materia_id")
+        if materia_id:
+            consolidadas[str(materia_id)] = nota
+        else:
+            sem_materia.append(nota)
+
+    return list(consolidadas.values()) + sem_materia
+
+
 def _chave_aluno_banco_antigo(supabase, matricula: str, turma_id: str) -> str:
     """Mantém históricos separados mesmo antes da migração estrutural do banco."""
     chave_por_turma = f"{turma_id}::{matricula}"
@@ -290,6 +316,92 @@ def get_notas_aluno(matricula: str, turma_id: str):
         consulta = consulta.eq("turma_id", turma_id)
     response = consulta.execute()
     return response.data
+
+
+def get_historico_aluno_por_ctr(ctr: str):
+    """Localiza um aluno pelo CTR e reúne seus módulos cursados em todas as turmas."""
+    supabase = get_supabase_client()
+    ctr_normalizado = _normalizar_ctr(ctr)
+    if not ctr_normalizado:
+        return None
+
+    # Bancos antigos separavam o mesmo CTR por turma usando "turma::CTR".
+    # As duas consultas abaixo cobrem tanto o esquema novo quanto esse legado.
+    alunos_exatos = (
+        supabase.table("alunos")
+        .select("matricula,nome,turma_id")
+        .eq("matricula", ctr_normalizado)
+        .execute()
+        .data
+    ) or []
+    alunos_legados = (
+        supabase.table("alunos")
+        .select("matricula,nome,turma_id")
+        .like("matricula", f"%::{ctr_normalizado}")
+        .execute()
+        .data
+    ) or []
+
+    alunos_por_chave = {
+        aluno["matricula"]: aluno
+        for aluno in alunos_exatos + alunos_legados
+        if _matricula_exibicao(aluno.get("matricula", "")) == ctr_normalizado
+    }
+    alunos = list(alunos_por_chave.values())
+    if not alunos:
+        return None
+
+    chaves_banco = list(alunos_por_chave.keys())
+    notas = (
+        supabase.table("notas")
+        .select("*, materias(nome, ordem)")
+        .in_("aluno_matricula", chaves_banco)
+        .execute()
+        .data
+    ) or []
+
+    turma_por_aluno = {
+        aluno["matricula"]: aluno.get("turma_id") for aluno in alunos
+    }
+    turma_ids = {
+        nota.get("turma_id") or turma_por_aluno.get(nota.get("aluno_matricula"))
+        for nota in notas
+    }
+    turma_ids.update(aluno.get("turma_id") for aluno in alunos)
+    turma_ids.discard(None)
+
+    turmas = []
+    if turma_ids:
+        turmas = (
+            supabase.table("turmas")
+            .select("id,nome,cursos(nome),professores(nome)")
+            .in_("id", list(turma_ids))
+            .execute()
+            .data
+        ) or []
+    turmas_por_id = {turma["id"]: turma for turma in turmas}
+
+    for nota in notas:
+        turma_id_nota = nota.get("turma_id") or turma_por_aluno.get(
+            nota.get("aluno_matricula")
+        )
+        turma = turmas_por_id.get(turma_id_nota, {})
+        nota["turma_origem"] = turma.get("nome", "")
+
+    nomes = sorted({
+        str(aluno.get("nome", "")).strip()
+        for aluno in alunos
+        if str(aluno.get("nome", "")).strip()
+    })
+    nome = nomes[0] if nomes else "Aluno"
+
+    return {
+        "ctr": ctr_normalizado,
+        "nome": nome,
+        "nomes_encontrados": nomes,
+        "notas": _consolidar_notas_por_materia(notas),
+        "turmas": sorted(turmas, key=lambda turma: turma.get("nome", "")),
+    }
 
 def clear_all_data():
     supabase = get_supabase_client()

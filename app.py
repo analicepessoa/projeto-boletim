@@ -352,24 +352,47 @@ with tab_boletins:
         if not turma_dict_bol:
             st.info("Nenhuma turma completa encontrada. Cadastre uma turma com curso e professor.")
         else:
-            turma_sel_bol = st.selectbox("Escolha a Turma", list(turma_dict_bol.keys()), format_func=lambda x: turma_dict_bol[x])
+            turma_sel_bol = st.selectbox(
+                "Escolha a turma do boletim",
+                list(turma_dict_bol.keys()),
+                format_func=lambda x: turma_dict_bol[x],
+            )
             
             if turma_sel_bol:
-                alunos = db.get_alunos_por_turma(turma_sel_bol)
-                if alunos:
-                    aluno_dict = {a['matricula']: a['nome'] for a in alunos}
-                    matricula_exibicao = {
-                        a['matricula']: a.get('matricula_exibicao', a['matricula'])
-                        for a in alunos
-                    }
-                    aluno_sel = st.selectbox(
-                        "Selecione o Aluno",
-                        list(aluno_dict.keys()),
-                        format_func=lambda x: f"{matricula_exibicao[x]} - {aluno_dict[x]}",
-                    )
-                    
-                    if aluno_sel:
-                        notas_aluno = db.get_notas_aluno(aluno_sel, turma_sel_bol)
+                st.caption(
+                    "Digite o CTR/código do aluno. O boletim reunirá os módulos "
+                    "cursados por esse mesmo CTR, inclusive em outras turmas."
+                )
+                with st.form("buscar_aluno_ctr"):
+                    ctr_digitado = st.text_input("CTR / código do aluno")
+                    buscar_ctr = st.form_submit_button("Buscar aluno", type="primary")
+
+                if buscar_ctr:
+                    st.session_state["ctr_boletim"] = ctr_digitado.strip()
+
+                ctr_boletim = st.session_state.get("ctr_boletim", "")
+                if ctr_boletim:
+                    historico = db.get_historico_aluno_por_ctr(ctr_boletim)
+                    if historico:
+                        aluno_nome = historico['nome']
+                        aluno_ctr = historico['ctr']
+                        notas_aluno = historico['notas']
+
+                        if len(historico.get('nomes_encontrados', [])) > 1:
+                            st.warning(
+                                "Este CTR aparece com variações de nome no cadastro: "
+                                + ", ".join(historico['nomes_encontrados'])
+                                + ". Confira antes de emitir o boletim."
+                            )
+
+                        turmas_origem = [
+                            turma.get('nome', '') for turma in historico.get('turmas', [])
+                            if turma.get('nome')
+                        ]
+                        st.success(f"Aluno encontrado: {aluno_ctr} - {aluno_nome}")
+                        if turmas_origem:
+                            st.caption("Histórico consultado: " + ", ".join(turmas_origem))
+
                         if notas_aluno:
                             df_aluno = pd.DataFrame(notas_aluno)
                             df_aluno['Matéria'] = df_aluno['materias'].apply(lambda m: m['nome'])
@@ -381,8 +404,9 @@ with tab_boletins:
                             df_aluno['Faltas'] = df_aluno['faltas']
                             df_aluno['Frequência (%)'] = df_aluno.apply(lambda r: (r['Presenças']/(r['Presenças']+r['Faltas'])*100) if (r['Presenças']+r['Faltas'])>0 else 0, axis=1)
                             df_aluno['Detalhes_JSON'] = df_aluno['detalhes_json']
+                            df_aluno['Turma de origem'] = df_aluno.get('turma_origem', '')
                             
-                            st.subheader(f"Desempenho: {aluno_dict[aluno_sel]}")
+                            st.subheader(f"Desempenho: {aluno_nome}")
                             
                             total_p = int(df_aluno['Presenças'].sum())
                             total_f = int(df_aluno['Faltas'].sum())
@@ -394,7 +418,7 @@ with tab_boletins:
                             m3.metric("Total Faltas", total_f)
                             m4.metric("Frequência Global", f"{freq_global:.1f}%")
                             
-                            colunas_mostrar = ['Matéria', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)']
+                            colunas_mostrar = ['Matéria', 'Turma de origem', 'Nota', 'Presenças', 'Faltas', 'Frequência (%)']
                             st.dataframe(df_aluno[colunas_mostrar], use_container_width=True, hide_index=True)
                             
                             st.divider()
@@ -408,8 +432,8 @@ with tab_boletins:
                                 with st.spinner("Gerando documento..."):
                                     chart_buffer = gerar_grafico_frequencia(total_p, total_f)
                                     dados_aluno = {
-                                        'nome': aluno_dict[aluno_sel],
-                                        'matricula': matricula_exibicao[aluno_sel],
+                                        'nome': aluno_nome,
+                                        'matricula': aluno_ctr,
                                         'materias': df_aluno
                                     }
                                     
@@ -427,16 +451,16 @@ with tab_boletins:
                                         turma=turma_info['nome'],
                                         logo_path=logo_path if os.path.exists(logo_path) else None
                                     )
-                                    st.session_state[f'pdf_{aluno_sel}'] = caminho_pdf
+                                    st.session_state[f'pdf_{aluno_ctr}'] = caminho_pdf
                                     st.success("Boletim preparado!")
                                     
-                            if f'pdf_{aluno_sel}' in st.session_state and os.path.exists(st.session_state[f'pdf_{aluno_sel}']):
-                                caminho_pdf = st.session_state[f'pdf_{aluno_sel}']
+                            if f'pdf_{aluno_ctr}' in st.session_state and os.path.exists(st.session_state[f'pdf_{aluno_ctr}']):
+                                caminho_pdf = st.session_state[f'pdf_{aluno_ctr}']
                                 with open(caminho_pdf, "rb") as f:
                                     st.download_button("📥 Baixar Boletim PDF", data=f, file_name=os.path.basename(caminho_pdf), mime="application/pdf")
                         else:
-                            st.info("Nenhuma nota lançada para este aluno ainda.")
-                else:
-                    st.info("Nenhum aluno vinculado a esta turma.")
+                            st.info("O aluno foi encontrado, mas ainda não possui notas lançadas.")
+                    else:
+                        st.warning(f"Nenhum aluno encontrado com o CTR/código {ctr_boletim}.")
     else:
         st.warning("Cadastre Turmas no Painel Admin.")
