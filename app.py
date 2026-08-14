@@ -332,6 +332,17 @@ with tab_upload:
                         f"Arquivo da turma **{turma_origem}**: "
                         f"{len(pacote_allnet['modulos'])} módulo(s) encontrado(s)."
                     )
+                    modulos_ignorados = pacote_allnet.get('modulos_ignorados', [])
+                    if modulos_ignorados:
+                        nomes_ignorados = [
+                            str(modulo.get('nome', '')).strip()
+                            for modulo in modulos_ignorados
+                            if isinstance(modulo, dict) and str(modulo.get('nome', '')).strip()
+                        ]
+                        st.warning(
+                            f"{len(nomes_ignorados)} módulo(s) ainda sem conteúdo foram ignorados: "
+                            + ", ".join(nomes_ignorados)
+                        )
                     if not nomes_compativeis:
                         st.error(
                             f"Este arquivo é da turma {turma_origem}, mas a turma selecionada no sistema "
