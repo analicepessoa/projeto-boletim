@@ -2,8 +2,16 @@ import streamlit as st
 import pandas as pd
 import os
 import hmac
+import io
+import zipfile
 from pathlib import Path
 from src.data_processor import processar_planilhas, assinatura_conteudo_planilha
+from src.allnet_importer import (
+    carregar_pacote_allnet,
+    modulo_para_dataframe,
+    normalizar_texto,
+    sugerir_materia,
+)
 from src.chart_maker import gerar_grafico_frequencia
 from src.pdf_generator import gerar_pdf
 import src.supabase_client as db
@@ -12,9 +20,21 @@ st.set_page_config(page_title="ALLNET - Boletins Escolares", page_icon="📊", l
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 ASSETS_DIR = PROJECT_ROOT / "assets"
+IMPORTADOR_DIR = PROJECT_ROOT / "importador_allnet_extensao"
 
 # Cria pastas necessárias se não existirem
 ASSETS_DIR.mkdir(exist_ok=True)
+
+
+def _criar_zip_importador() -> bytes | None:
+    if not IMPORTADOR_DIR.exists():
+        return None
+    memoria = io.BytesIO()
+    with zipfile.ZipFile(memoria, "w", zipfile.ZIP_DEFLATED) as arquivo_zip:
+        for caminho in sorted(IMPORTADOR_DIR.iterdir()):
+            if caminho.is_file():
+                arquivo_zip.write(caminho, caminho.name)
+    return memoria.getvalue()
 
 # CSS Customizado
 st.markdown("""
@@ -258,6 +278,160 @@ with tab_upload:
             st.warning("Cadastre Matérias para este curso no Painel Admin antes de fazer upload.")
         else:
             materia_dict = {m['id']: m['nome'] for m in materias_do_curso}
+
+            st.subheader("Importação rápida da ALLNET")
+            st.caption(
+                "Use o Importador ALLNET para reunir todos os módulos da turma em um único arquivo. "
+                "Nada será salvo antes da tela de conferência."
+            )
+
+            pacote_extensao = _criar_zip_importador()
+            with st.expander("Instalar o Importador ALLNET no navegador"):
+                st.markdown(
+                    "1. Baixe e extraia o arquivo do importador.\n"
+                    "2. No Chrome, abra `chrome://extensions` e ative **Modo do desenvolvedor**.\n"
+                    "3. Clique em **Carregar sem compactação** e escolha a pasta extraída.\n"
+                    "4. No Diário de Classe, aparecerá o botão **Enviar para Boletins**."
+                )
+                if pacote_extensao:
+                    st.download_button(
+                        "Baixar Importador ALLNET",
+                        data=pacote_extensao,
+                        file_name="Importador_ALLNET_para_Boletins.zip",
+                        mime="application/zip",
+                        key="download_importador_allnet",
+                    )
+                else:
+                    st.info("O instalador do importador estará disponível na próxima atualização.")
+
+            arquivo_allnet = st.file_uploader(
+                "Envie aqui o arquivo único gerado pelo Importador ALLNET",
+                type=["json"],
+                key=f"pacote_allnet_{sel_turma_upload}",
+            )
+
+            if arquivo_allnet:
+                try:
+                    pacote_allnet = carregar_pacote_allnet(arquivo_allnet.getvalue())
+                    turma_origem = str(pacote_allnet['turma']['nome']).strip()
+                    turma_destino = str(turma_selecionada['nome']).strip()
+                    origem_normalizada = normalizar_texto(turma_origem)
+                    destino_normalizado = normalizar_texto(turma_destino)
+                    nomes_compativeis = (
+                        origem_normalizada == destino_normalizado
+                        or (
+                            min(len(origem_normalizada), len(destino_normalizado)) >= 4
+                            and (
+                                origem_normalizada in destino_normalizado
+                                or destino_normalizado in origem_normalizada
+                            )
+                        )
+                    )
+
+                    st.info(
+                        f"Arquivo da turma **{turma_origem}**: "
+                        f"{len(pacote_allnet['modulos'])} módulo(s) encontrado(s)."
+                    )
+                    if not nomes_compativeis:
+                        st.error(
+                            f"Este arquivo é da turma {turma_origem}, mas a turma selecionada no sistema "
+                            f"é {turma_destino}. Selecione a turma correta antes de continuar."
+                        )
+                    else:
+                        st.markdown("**Confira o vínculo dos módulos:**")
+                        importacoes_allnet = []
+                        for indice, modulo in enumerate(pacote_allnet['modulos']):
+                            sugerida_id, motivo = sugerir_materia(modulo['nome'], materias_do_curso)
+                            opcoes_materia = [None] + list(materia_dict.keys())
+                            indice_sugerido = (
+                                opcoes_materia.index(sugerida_id) if sugerida_id in opcoes_materia else 0
+                            )
+                            materia_id = st.selectbox(
+                                modulo['nome'],
+                                opcoes_materia,
+                                index=indice_sugerido,
+                                format_func=lambda item: (
+                                    "Selecione a matéria correspondente"
+                                    if item is None
+                                    else materia_dict[item]
+                                ),
+                                key=f"allnet_map_{sel_turma_upload}_{modulo.get('id', indice)}",
+                                help=f"Sugestão automática: {motivo}.",
+                            )
+                            if materia_id:
+                                dataframe = modulo_para_dataframe(modulo, materia_dict[materia_id])
+                                importacoes_allnet.append(
+                                    {
+                                        "modulo": modulo,
+                                        "materia_id": materia_id,
+                                        "materia": materia_dict[materia_id],
+                                        "df": dataframe,
+                                    }
+                                )
+
+                        ids_vinculados = [item['materia_id'] for item in importacoes_allnet]
+                        vinculos_repetidos = len(ids_vinculados) != len(set(ids_vinculados))
+                        todos_vinculados = len(importacoes_allnet) == len(pacote_allnet['modulos'])
+                        registros_vazios = [
+                            item['modulo']['nome'] for item in importacoes_allnet if item['df'].empty
+                        ]
+
+                        if not todos_vinculados:
+                            st.warning("Vincule todos os módulos antes de salvar.")
+                        if vinculos_repetidos:
+                            st.error("Há mais de um módulo vinculado à mesma matéria. Corrija os vínculos.")
+                        if registros_vazios:
+                            st.error(
+                                "Estes módulos não possuem alunos válidos: " + ", ".join(registros_vazios)
+                            )
+
+                        if importacoes_allnet:
+                            previa_allnet = pd.DataFrame(
+                                [
+                                    {
+                                        "Módulo ALLNET": item['modulo']['nome'],
+                                        "Matéria no boletim": item['materia'],
+                                        "Alunos": len(item['df']),
+                                        "Média das notas": round(float(item['df']['Nota'].mean()), 2),
+                                        "Presenças": int(item['df']['Presenças'].sum()),
+                                        "Faltas": int(item['df']['Faltas'].sum()),
+                                    }
+                                    for item in importacoes_allnet
+                                ]
+                            )
+                            st.subheader("Conferência antes de salvar")
+                            st.dataframe(previa_allnet, use_container_width=True, hide_index=True)
+
+                        pode_salvar_allnet = (
+                            todos_vinculados
+                            and not vinculos_repetidos
+                            and not registros_vazios
+                            and bool(importacoes_allnet)
+                        )
+                        if st.button(
+                            f"Confirmar e salvar {len(importacoes_allnet)} módulo(s)",
+                            type="primary",
+                            disabled=not pode_salvar_allnet,
+                            key=f"salvar_pacote_allnet_{sel_turma_upload}",
+                        ):
+                            with st.spinner("Salvando os módulos conferidos..."):
+                                total_salvo = sum(
+                                    db.salvar_dados_upload(
+                                        item['df'], sel_turma_upload, item['materia_id']
+                                    )
+                                    for item in importacoes_allnet
+                                )
+                            st.success(
+                                f"Importação concluída: {len(importacoes_allnet)} módulo(s) e "
+                                f"{total_salvo} registro(s) salvos."
+                            )
+                except ValueError as erro:
+                    st.error(str(erro))
+                except Exception as erro:
+                    st.error(f"Não foi possível conferir o arquivo do Importador ALLNET: {erro}")
+
+            st.divider()
+            st.subheader("Opção antiga: planilhas Excel/CSV")
             
             arquivos = st.file_uploader("Selecione os arquivos Excel/CSV", accept_multiple_files=True, type=['xlsx', 'csv'], key=f"uploader_{sel_turma_upload}")
             
@@ -464,3 +638,4 @@ with tab_boletins:
                         st.warning(f"Nenhum aluno encontrado com o CTR/código {ctr_boletim}.")
     else:
         st.warning("Cadastre Turmas no Painel Admin.")
+
