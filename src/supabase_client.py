@@ -113,11 +113,52 @@ def delete_turma(turma_id: str):
 # FUNÇÕES DE UPLOAD E NOTAS
 # ==========================================
 
+def _tem_historico_de_turmas(supabase) -> bool:
+    """Detecta se a migração aluno_turmas/notas.turma_id já foi aplicada."""
+    try:
+        supabase.table("aluno_turmas").select("id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _matricula_exibicao(matricula_interna: str) -> str:
+    """Remove o prefixo interno usado por bancos antigos para separar turmas."""
+    return str(matricula_interna).rsplit("::", 1)[-1]
+
+
+def _chave_aluno_banco_antigo(supabase, matricula: str, turma_id: str) -> str:
+    """Mantém históricos separados mesmo antes da migração estrutural do banco."""
+    chave_por_turma = f"{turma_id}::{matricula}"
+    por_turma = (
+        supabase.table("alunos")
+        .select("matricula")
+        .eq("matricula", chave_por_turma)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if por_turma:
+        return chave_por_turma
+
+    cadastro_original = (
+        supabase.table("alunos")
+        .select("matricula,turma_id")
+        .eq("matricula", matricula)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if not cadastro_original or cadastro_original[0].get("turma_id") == turma_id:
+        return matricula
+    return chave_por_turma
+
 def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
     """
     Recebe o DataFrame gerado pelo processador e salva Alunos e Notas no Supabase.
     """
     supabase = get_supabase_client()
+    banco_com_historico = _tem_historico_de_turmas(supabase)
     
     # Prepara lista de alunos únicos e notas
     sucesso_notas = 0
@@ -152,29 +193,48 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
             "notas": notas_extras
         }
         
+        chave_aluno = matricula if banco_com_historico else _chave_aluno_banco_antigo(
+            supabase, matricula, turma_id
+        )
+
         # 1. Tenta inserir ou garantir que o aluno existe (Upsert)
         aluno_data = {
-            "matricula": matricula,
+            "matricula": chave_aluno,
             "nome": nome,
             "turma_id": turma_id
         }
         supabase.table("alunos").upsert(aluno_data, on_conflict="matricula").execute()
+
+        if banco_com_historico:
+            # Mantém o histórico de todas as turmas cursadas pelo aluno.
+            supabase.table("aluno_turmas").upsert(
+                {
+                    "aluno_matricula": chave_aluno,
+                    "turma_id": turma_id,
+                },
+                on_conflict="aluno_matricula,turma_id",
+            ).execute()
         
         # 2. Inserir ou atualizar a nota para esta matéria específica
         nota_data = {
-            "aluno_matricula": matricula,
+            "aluno_matricula": chave_aluno,
             "materia_id": materia_id,
             "nota": nota,
             "presencas": presencas,
             "faltas": faltas,
             "detalhes_json": detalhes
         }
+        if banco_com_historico:
+            nota_data["turma_id"] = turma_id
         
         try:
             # Atualiza ou cria em uma única operação, sem apagar a nota anterior primeiro.
-            supabase.table("notas").upsert(
-                nota_data, on_conflict="aluno_matricula,materia_id"
-            ).execute()
+            conflito = (
+                "aluno_matricula,turma_id,materia_id"
+                if banco_com_historico
+                else "aluno_matricula,materia_id"
+            )
+            supabase.table("notas").upsert(nota_data, on_conflict=conflito).execute()
             sucesso_notas += 1
         except Exception as e:
             st.warning(f"Erro ao salvar nota do aluno {nome}: {str(e)}")
@@ -187,13 +247,48 @@ def salvar_dados_upload(df_consolidado, turma_id: str, materia_id: str):
 
 def get_alunos_por_turma(turma_id: str):
     supabase = get_supabase_client()
-    response = supabase.table("alunos").select("*").eq("turma_id", turma_id).execute()
-    return response.data
+    if _tem_historico_de_turmas(supabase):
+        vinculos = (
+            supabase.table("aluno_turmas")
+            .select("aluno_matricula")
+            .eq("turma_id", turma_id)
+            .execute()
+            .data
+        ) or []
+        matriculas = [v["aluno_matricula"] for v in vinculos]
+        if not matriculas:
+            return []
+        alunos = (
+            supabase.table("alunos")
+            .select("matricula,nome")
+            .in_("matricula", matriculas)
+            .execute()
+            .data
+        ) or []
+    else:
+        alunos = (
+            supabase.table("alunos")
+            .select("matricula,nome")
+            .eq("turma_id", turma_id)
+            .execute()
+            .data
+        ) or []
 
-def get_notas_aluno(matricula: str):
+    for aluno in alunos:
+        aluno["matricula_exibicao"] = _matricula_exibicao(aluno["matricula"])
+    return sorted(alunos, key=lambda aluno: aluno.get("nome", ""))
+
+def get_notas_aluno(matricula: str, turma_id: str):
     supabase = get_supabase_client()
     # Puxa as notas juntamente com o nome e a ordem da matéria usando Foreign Key
-    response = supabase.table("notas").select("*, materias(nome, ordem)").eq("aluno_matricula", matricula).execute()
+    consulta = (
+        supabase.table("notas")
+        .select("*, materias(nome, ordem)")
+        .eq("aluno_matricula", matricula)
+    )
+    if _tem_historico_de_turmas(supabase):
+        consulta = consulta.eq("turma_id", turma_id)
+    response = consulta.execute()
     return response.data
 
 def clear_all_data():
@@ -201,15 +296,18 @@ def clear_all_data():
     # Delete in order of dependency to respect foreign key constraints
     # 1. Notas
     supabase.table("notas").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-    # 2. Alunos
+    # 2. Vínculos entre alunos e turmas (quando a migração já existe)
+    if _tem_historico_de_turmas(supabase):
+        supabase.table("aluno_turmas").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+    # 3. Alunos
     supabase.table("alunos").delete().neq("matricula", "").execute()
-    # 3. Turmas
+    # 4. Turmas
     supabase.table("turmas").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-    # 4. Materias
+    # 5. Materias
     supabase.table("materias").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-    # 5. Cursos
+    # 6. Cursos
     supabase.table("cursos").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
-    # 6. Professores
+    # 7. Professores
     supabase.table("professores").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
 # Force reload for streamlit
