@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import hmac
 from pathlib import Path
-from src.data_processor import processar_planilhas
+from src.data_processor import processar_planilhas, assinatura_conteudo_planilha
 from src.chart_maker import gerar_grafico_frequencia
 from src.pdf_generator import gerar_pdf
 import src.supabase_client as db
@@ -273,11 +273,66 @@ with tab_upload:
                 if st.button("Processar e Salvar no Supabase", type="primary"):
                     with st.spinner("Processando planilhas e enviando para nuvem..."):
                         try:
-                            total_salvo = 0
+                            processados = []
+                            materias_repetidas = {}
+
                             for item in arquivos_com_materias:
+                                materias_repetidas.setdefault(item['materia_id'], []).append(item['file'].name)
                                 df_individual = processar_planilhas([{'file': item['file'], 'materia': item['materia']}])
                                 if not df_individual.empty:
-                                    total_salvo += db.salvar_dados_upload(df_individual, sel_turma_upload, item['materia_id'])
+                                    processados.append({
+                                        **item,
+                                        'df': df_individual,
+                                        'assinatura': assinatura_conteudo_planilha(df_individual),
+                                    })
+
+                            repeticoes_materia = [
+                                nomes for nomes in materias_repetidas.values() if len(nomes) > 1
+                            ]
+                            if repeticoes_materia:
+                                st.error("Há mais de um arquivo vinculado à mesma matéria. Corrija as matérias antes de salvar.")
+                                for nomes in repeticoes_materia:
+                                    st.warning("Arquivos na mesma matéria: " + ", ".join(nomes))
+                                st.stop()
+
+                            por_assinatura = {}
+                            for item in processados:
+                                por_assinatura.setdefault(item['assinatura'], []).append(item)
+
+                            duplicados = [grupo for grupo in por_assinatura.values() if len(grupo) > 1]
+                            if duplicados:
+                                st.error(
+                                    "Envio bloqueado: existem planilhas com conteúdo acadêmico idêntico. "
+                                    "Confira os downloads antes de tentar novamente."
+                                )
+                                for grupo in duplicados:
+                                    descricao = " | ".join(
+                                        f"{item['file'].name} → {item['materia']}" for item in grupo
+                                    )
+                                    st.warning(descricao)
+                                st.stop()
+
+                            if not processados:
+                                st.warning("Nenhum registro válido foi encontrado nos arquivos.")
+                                st.stop()
+
+                            previa = pd.DataFrame([
+                                {
+                                    'Arquivo': item['file'].name,
+                                    'Matéria': item['materia'],
+                                    'Alunos': len(item['df']),
+                                    'Média das notas': round(float(item['df']['Nota'].mean()), 2),
+                                    'Presenças': int(item['df']['Presenças'].sum()),
+                                    'Faltas': int(item['df']['Faltas'].sum()),
+                                }
+                                for item in processados
+                            ])
+                            st.subheader("Conferência do envio")
+                            st.dataframe(previa, use_container_width=True, hide_index=True)
+
+                            total_salvo = 0
+                            for item in processados:
+                                total_salvo += db.salvar_dados_upload(item['df'], sel_turma_upload, item['materia_id'])
                             if total_salvo:
                                 st.success(f"Upload concluído: {total_salvo} registro(s) de notas salvo(s).")
                             else:
@@ -303,10 +358,18 @@ with tab_boletins:
                 alunos = db.get_alunos_por_turma(turma_sel_bol)
                 if alunos:
                     aluno_dict = {a['matricula']: a['nome'] for a in alunos}
-                    aluno_sel = st.selectbox("Selecione o Aluno", list(aluno_dict.keys()), format_func=lambda x: f"{x} - {aluno_dict[x]}")
+                    matricula_exibicao = {
+                        a['matricula']: a.get('matricula_exibicao', a['matricula'])
+                        for a in alunos
+                    }
+                    aluno_sel = st.selectbox(
+                        "Selecione o Aluno",
+                        list(aluno_dict.keys()),
+                        format_func=lambda x: f"{matricula_exibicao[x]} - {aluno_dict[x]}",
+                    )
                     
                     if aluno_sel:
-                        notas_aluno = db.get_notas_aluno(aluno_sel)
+                        notas_aluno = db.get_notas_aluno(aluno_sel, turma_sel_bol)
                         if notas_aluno:
                             df_aluno = pd.DataFrame(notas_aluno)
                             df_aluno['Matéria'] = df_aluno['materias'].apply(lambda m: m['nome'])
@@ -346,7 +409,7 @@ with tab_boletins:
                                     chart_buffer = gerar_grafico_frequencia(total_p, total_f)
                                     dados_aluno = {
                                         'nome': aluno_dict[aluno_sel],
-                                        'matricula': aluno_sel,
+                                        'matricula': matricula_exibicao[aluno_sel],
                                         'materias': df_aluno
                                     }
                                     
