@@ -39,27 +39,86 @@ CREATE TABLE IF NOT EXISTS materias (
 CREATE TABLE IF NOT EXISTS alunos (
     matricula TEXT PRIMARY KEY,
     nome TEXT NOT NULL,
-    turma_id UUID REFERENCES turmas(id) ON DELETE CASCADE,
+    turma_id UUID REFERENCES turmas(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 6. Tabela de Notas e Frequência
+-- 6. Histórico de turmas cursadas por cada aluno
+CREATE TABLE IF NOT EXISTS aluno_turmas (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    aluno_matricula TEXT NOT NULL REFERENCES alunos(matricula) ON DELETE CASCADE,
+    turma_id UUID NOT NULL REFERENCES turmas(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    UNIQUE (aluno_matricula, turma_id)
+);
+
+-- 7. Tabela de Notas e Frequência
 -- Guarda as notas e presenças de cada aluno por matéria
 CREATE TABLE IF NOT EXISTS notas (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     aluno_matricula TEXT REFERENCES alunos(matricula) ON DELETE CASCADE,
+    turma_id UUID NOT NULL REFERENCES turmas(id) ON DELETE CASCADE,
     materia_id UUID REFERENCES materias(id) ON DELETE CASCADE,
     nota NUMERIC(5,2) DEFAULT 0.0,
     presencas INTEGER DEFAULT 0,
     faltas INTEGER DEFAULT 0,
     detalhes_json JSONB DEFAULT '{"frequencia": [], "notas": {}}'::jsonb,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-    -- Garante que um aluno não tenha duas notas para a mesma matéria na mesma vez
-    UNIQUE (aluno_matricula, materia_id)
+    -- O mesmo aluno pode cursar a mesma matéria em turmas diferentes.
+    UNIQUE (aluno_matricula, turma_id, materia_id)
 );
 
--- Se o banco já foi criado com a versão anterior, esta linha faz a migração
--- sem apagar os dados existentes.
+-- Migração segura para bancos criados com a versão anterior.
 ALTER TABLE notas
 ADD COLUMN IF NOT EXISTS detalhes_json JSONB
 DEFAULT '{"frequencia": [], "notas": {}}'::jsonb;
+
+ALTER TABLE notas
+ADD COLUMN IF NOT EXISTS turma_id UUID REFERENCES turmas(id) ON DELETE CASCADE;
+
+-- O campo turma_id de alunos passa a indicar apenas a turma mais recente.
+ALTER TABLE alunos DROP CONSTRAINT IF EXISTS alunos_turma_id_fkey;
+ALTER TABLE alunos
+ADD CONSTRAINT alunos_turma_id_fkey
+FOREIGN KEY (turma_id) REFERENCES turmas(id) ON DELETE SET NULL;
+
+-- Conserva todos os vínculos existentes antes de ativar o novo modelo.
+INSERT INTO aluno_turmas (aluno_matricula, turma_id)
+SELECT matricula, turma_id
+FROM alunos
+WHERE turma_id IS NOT NULL
+ON CONFLICT (aluno_matricula, turma_id) DO NOTHING;
+
+UPDATE notas AS n
+SET turma_id = a.turma_id
+FROM alunos AS a
+WHERE n.aluno_matricula = a.matricula
+  AND n.turma_id IS NULL;
+
+ALTER TABLE notas
+DROP CONSTRAINT IF EXISTS notas_aluno_matricula_materia_id_key;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'notas_aluno_turma_materia_key'
+    ) THEN
+        ALTER TABLE notas
+        ADD CONSTRAINT notas_aluno_turma_materia_key
+        UNIQUE (aluno_matricula, turma_id, materia_id);
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM notas WHERE turma_id IS NULL) THEN
+        ALTER TABLE notas ALTER COLUMN turma_id SET NOT NULL;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_aluno_turmas_turma
+ON aluno_turmas (turma_id);
+
+CREATE INDEX IF NOT EXISTS idx_notas_aluno_turma
+ON notas (aluno_matricula, turma_id);

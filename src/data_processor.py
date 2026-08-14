@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 import pandas as pd
 
 
@@ -41,6 +44,10 @@ def processar_planilhas(arquivos_com_materias):
     for item in arquivos_com_materias:
         arquivo = item['file']
         materia = item['materia']
+
+        # Streamlit may reuse the same upload object between previews and saves.
+        if hasattr(arquivo, 'seek'):
+            arquivo.seek(0)
         
         try:
             if arquivo.name.lower().endswith('.csv'):
@@ -153,6 +160,33 @@ def processar_planilhas(arquivos_com_materias):
 
     df_final = pd.concat(dados_consolidados, ignore_index=True)
     return df_final
+
+
+def assinatura_conteudo_planilha(df):
+    """Create a stable fingerprint of the academic content in a parsed file."""
+    colunas = [
+        'Matrícula', 'Nome', 'Nota', 'Presenças', 'Faltas',
+        'Frequencia_Detalhada', 'Notas_Detalhadas'
+    ]
+    registros = []
+
+    for _, row in df.sort_values(by=['Matrícula', 'Nome']).iterrows():
+        registro = {}
+        for coluna in colunas:
+            valor = row.get(coluna)
+            if isinstance(valor, float) and pd.isna(valor):
+                valor = None
+            registro[coluna] = valor
+        registros.append(registro)
+
+    conteudo = json.dumps(
+        registros,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(',', ':'),
+        default=str,
+    )
+    return hashlib.sha256(conteudo.encode('utf-8')).hexdigest()
 
 def obter_resumo_aluno(df_consolidado, matricula):
     """Retorna os dados consolidados de um aluno específico e o total global de frequência."""
