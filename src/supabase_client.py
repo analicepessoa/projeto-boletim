@@ -136,8 +136,8 @@ def _normalizar_ctr(ctr: str) -> str:
 
 
 def _consolidar_notas_por_materia(notas: list[dict]) -> list[dict]:
-    """Une partes do mesmo módulo cursadas pelo CTR em turmas diferentes."""
-    grupos = {}
+    """Mantém uma linha por módulo e turma, eliminando duplicatas reais."""
+    mais_recentes = {}
     sem_materia = []
 
     for nota in sorted(
@@ -145,72 +145,30 @@ def _consolidar_notas_por_materia(notas: list[dict]) -> list[dict]:
         key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
     ):
         materia_id = nota.get("materia_id")
-        if materia_id:
-            grupos.setdefault(str(materia_id), []).append(nota)
-        else:
+        if not materia_id:
             sem_materia.append(nota)
-
-    consolidadas = []
-    for grupo in grupos.values():
-        if len(grupo) == 1:
-            consolidadas.append(grupo[0])
             continue
 
-        # O último lançamento fornece os campos cadastrais e a nota final mais recente.
-        consolidada = dict(grupo[-1])
-        total_presencas = 0
-        total_faltas = 0
-        frequencia_completa = []
-        notas_detalhadas = {}
-        notas_validas = []
-        turmas_origem = []
+        turma_id = str(nota.get("turma_id") or "").strip()
+        turma_origem = str(nota.get("turma_origem") or "").strip()
+        matricula_interna = str(nota.get("aluno_matricula") or "").strip()
 
-        for parte in grupo:
-            try:
-                total_presencas += max(int(parte.get("presencas") or 0), 0)
-            except (TypeError, ValueError):
-                pass
-            try:
-                total_faltas += max(int(parte.get("faltas") or 0), 0)
-            except (TypeError, ValueError):
-                pass
+        # O esquema atual informa turma_id. Bancos antigos podem depender do nome
+        # da turma ou da matrícula interna "turma::CTR" para separar o histórico.
+        if turma_id:
+            chave_turma = f"id:{turma_id}"
+        elif turma_origem:
+            chave_turma = f"nome:{turma_origem}"
+        elif "::" in matricula_interna:
+            chave_turma = f"matricula:{matricula_interna}"
+        else:
+            chave_turma = "sem-turma"
 
-            detalhes = parte.get("detalhes_json")
-            if not isinstance(detalhes, dict):
-                detalhes = {}
-            frequencia = detalhes.get("frequencia", [])
-            if isinstance(frequencia, list):
-                frequencia_completa.extend(frequencia)
-            notas_parte = detalhes.get("notas", {})
-            if isinstance(notas_parte, dict):
-                for nome_avaliacao, valor in notas_parte.items():
-                    # Se a mesma avaliação existir nas duas turmas, prevalece a
-                    # informação da continuação mais recente.
-                    notas_detalhadas[str(nome_avaliacao)] = valor
+        # Como as notas estão em ordem cronológica, uma duplicata do mesmo
+        # módulo na mesma turma é substituída pelo lançamento mais recente.
+        mais_recentes[(str(materia_id), chave_turma)] = nota
 
-            try:
-                nota_final = float(parte.get("nota") or 0)
-                if not math.isnan(nota_final) and nota_final > 0:
-                    notas_validas.append(nota_final)
-            except (TypeError, ValueError):
-                pass
-
-            turma = str(parte.get("turma_origem") or "").strip()
-            if turma and turma not in turmas_origem:
-                turmas_origem.append(turma)
-
-        consolidada["presencas"] = total_presencas
-        consolidada["faltas"] = total_faltas
-        consolidada["nota"] = notas_validas[-1] if notas_validas else 0.0
-        consolidada["detalhes_json"] = {
-            "frequencia": frequencia_completa,
-            "notas": notas_detalhadas,
-        }
-        consolidada["turmas_origem"] = turmas_origem
-        consolidada["turma_origem"] = " + ".join(turmas_origem)
-        consolidadas.append(consolidada)
-
-    return consolidadas + sem_materia
+    return list(mais_recentes.values()) + sem_materia
 
 
 def _chave_aluno_banco_antigo(supabase, matricula: str, turma_id: str) -> str:
