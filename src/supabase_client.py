@@ -136,8 +136,8 @@ def _normalizar_ctr(ctr: str) -> str:
 
 
 def _consolidar_notas_por_materia(notas: list[dict]) -> list[dict]:
-    """Mantém somente o lançamento mais recente quando um módulo se repete."""
-    consolidadas = {}
+    """Mantém uma linha por módulo e turma, eliminando duplicatas reais."""
+    mais_recentes = {}
     sem_materia = []
 
     for nota in sorted(
@@ -145,12 +145,30 @@ def _consolidar_notas_por_materia(notas: list[dict]) -> list[dict]:
         key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
     ):
         materia_id = nota.get("materia_id")
-        if materia_id:
-            consolidadas[str(materia_id)] = nota
-        else:
+        if not materia_id:
             sem_materia.append(nota)
+            continue
 
-    return list(consolidadas.values()) + sem_materia
+        turma_id = str(nota.get("turma_id") or "").strip()
+        turma_origem = str(nota.get("turma_origem") or "").strip()
+        matricula_interna = str(nota.get("aluno_matricula") or "").strip()
+
+        # O esquema atual informa turma_id. Bancos antigos podem depender do nome
+        # da turma ou da matrícula interna "turma::CTR" para separar o histórico.
+        if turma_id:
+            chave_turma = f"id:{turma_id}"
+        elif turma_origem:
+            chave_turma = f"nome:{turma_origem}"
+        elif "::" in matricula_interna:
+            chave_turma = f"matricula:{matricula_interna}"
+        else:
+            chave_turma = "sem-turma"
+
+        # Como as notas estão em ordem cronológica, uma duplicata do mesmo
+        # módulo na mesma turma é substituída pelo lançamento mais recente.
+        mais_recentes[(str(materia_id), chave_turma)] = nota
+
+    return list(mais_recentes.values()) + sem_materia
 
 
 def _chave_aluno_banco_antigo(supabase, matricula: str, turma_id: str) -> str:
@@ -423,3 +441,4 @@ def clear_all_data():
     supabase.table("professores").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
 
 # Force reload for streamlit
+

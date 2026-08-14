@@ -166,10 +166,13 @@ def gerar_pdf(dados_aluno, total_presencas, total_faltas, freq_global, responsav
     # Matérias / Cards
     for _, row in df_materias.iterrows():
         # Prevent page break inside a card if possible
-        if pdf.get_y() > 220:
+        if pdf.get_y() > 215:
             pdf.add_page()
             
         materia_nome = str(row['Matéria'])
+        turma_origem = str(row.get('Turma de origem', '') or '').strip()
+        if turma_origem.lower() == 'nan':
+            turma_origem = ''
         nota_media = float(row['Nota'])
         p = int(row['Presenças'])
         f = int(row['Faltas'])
@@ -188,6 +191,12 @@ def gerar_pdf(dados_aluno, total_presencas, total_faltas, freq_global, responsav
         pdf.set_text_color(50, 50, 50)
         stats = f"Média: {nota_media:.1f}   P: {p}   F: {f}   Aulas: {aulas}   Freq: {freq:.0f}%"
         pdf.cell(90, 8, stats, align='R', ln=1)
+
+        # Exibe a passagem do aluno por cada turma sem misturar os resultados.
+        if turma_origem:
+            pdf.set_font('helvetica', '', 8)
+            pdf.set_text_color(90, 90, 90)
+            pdf.cell(180, 5, f"Turma de origem: {turma_origem}", ln=1)
         
         # Dynamic Grades Table
         detalhes = row.get('Detalhes_JSON', {})
@@ -384,3 +393,4 @@ def gerar_pdf(dados_aluno, total_presencas, total_faltas, freq_global, responsav
     pdf.output(str(output_path))
     
     return str(output_path)
+
